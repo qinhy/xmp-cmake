@@ -22,7 +22,7 @@ else()
 endif()
 
 # Add executable (if applicable)
-add_executable(simple_rsa ${PROJECT_SOURCE_DIR}/samples/simple_rsa/rsa.cc)
+add_executable(simple_rsa ${PROJECT_SOURCE_DIR}/samples/simple_rsa/rsa.cpp)
 
 # Link libraries
 target_link_libraries(simple_rsa xmp)

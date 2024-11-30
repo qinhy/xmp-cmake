@@ -524,14 +524,14 @@ xmpError_t inline xmpIntegersImportInternal(xmpHandle_t handle, xmpIntegers_t ou
     if(error!=cudaSuccess) {
       if(error==cudaErrorInvalidValue) {
         cudaGetLastError();  //reset to cudaSuccess
-        attrib.memoryType=cudaMemoryTypeHost;
+        attrib.type=cudaMemoryTypeHost;
       } else {
         return xmpErrorCuda;
       }
     }
     
     void* src=in;
-    if(attrib.memoryType==cudaMemoryTypeHost) {
+    if(attrib.type==cudaMemoryTypeHost) {
 
       xmpError_t e=xmpSetNecessaryScratchSize(handle,bytes);
       if(e!=xmpErrorSuccess) return e;
@@ -621,14 +621,14 @@ xmpError_t inline xmpIntegersExportInternal(xmpHandle_t handle, void* out, uint3
     if(error!=cudaSuccess) {
       if(error==cudaErrorInvalidValue) {
         cudaGetLastError();  //reset to cudaSuccess
-        attrib.memoryType=cudaMemoryTypeHost;
+        attrib.type=cudaMemoryTypeHost;
       } else {
         return xmpErrorCuda;
       }
     }
 
     void* dst=out;
-    if(attrib.memoryType==cudaMemoryTypeHost) {
+    if(attrib.type==cudaMemoryTypeHost) {
       xmpError_t e=xmpSetNecessaryScratchSize(handle,bytes);
       if(e!=xmpErrorSuccess) return e;
       dst=handle->scratch;
@@ -660,7 +660,7 @@ xmpError_t inline xmpIntegersExportInternal(xmpHandle_t handle, void* out, uint3
         return xmpErrorInvalidParameter;
     };
    
-    if(attrib.memoryType==cudaMemoryTypeHost) {
+    if(attrib.type==cudaMemoryTypeHost) {
       //copy up from temporary memory
       if(cudaSuccess!=cudaMemcpyAsync(out,dst,bytes,cudaMemcpyDefault,handle->stream))
         return xmpErrorCuda;

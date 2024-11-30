@@ -70,7 +70,7 @@ xmpError_t XMPAPI xmpIntegersCmpAsync(xmpHandle_t handle, int32_t *c, const xmpI
   if(cerror!=cudaSuccess) {
     if(cerror==cudaErrorInvalidValue) {
       cudaGetLastError();  //reset to cudaSuccess
-      attrib.memoryType=cudaMemoryTypeHost;
+      attrib.type=cudaMemoryTypeHost;
     }
     else {
       return xmpErrorCuda;
@@ -78,7 +78,7 @@ xmpError_t XMPAPI xmpIntegersCmpAsync(xmpHandle_t handle, int32_t *c, const xmpI
   }
 
   int32_t *dst=c;
-  if(attrib.memoryType==cudaMemoryTypeHost) {
+  if(attrib.type==cudaMemoryTypeHost) {
     xmpError_t error=xmpSetNecessaryScratchSize(handle, count*sizeof(int32_t));
     if(error!=xmpErrorSuccess)
       return error;
@@ -107,7 +107,7 @@ xmpError_t XMPAPI xmpIntegersCmpAsync(xmpHandle_t handle, int32_t *c, const xmpI
   configureActiveBlocks(handle, blocks, threads, strided_compare_kernel<GSL>);
   strided_compare_kernel<GSL><<<blocks, threads, 0, handle->stream>>>(cmp_arguments, count);
 
-  if(attrib.memoryType==cudaMemoryTypeHost) {
+  if(attrib.type==cudaMemoryTypeHost) {
     cudaMemcpyAsync(c,dst,sizeof(int32_t)*count,cudaMemcpyDefault,handle->stream);
   }
   XMP_CHECK_CUDA();
@@ -154,7 +154,7 @@ xmpError_t XMPAPI xmpIntegersShfAsync(xmpHandle_t handle, xmpIntegers_t c, const
   if(error!=cudaSuccess) {
     if(error==cudaErrorInvalidValue) {
       cudaGetLastError();  //reset to cudaSuccess
-      attrib.memoryType=cudaMemoryTypeHost;
+      attrib.type=cudaMemoryTypeHost;
     } else {
       return xmpErrorCuda;
     }
@@ -166,7 +166,7 @@ xmpError_t XMPAPI xmpIntegersShfAsync(xmpHandle_t handle, xmpIntegers_t c, const
   size_t scratch_size_out=0, scratch_size_shift=0;
   if(a==c)
     scratch_size_out=a->stride*a->nlimbs*sizeof(xmpLimb_t);
-  if(attrib.memoryType==cudaMemoryTypeHost)
+  if(attrib.type==cudaMemoryTypeHost)
     scratch_size_shift=scount*sizeof(int32_t);
 
   xmpError_t xerror=xmpSetNecessaryScratchSize(handle, scratch_size_out+scratch_size_shift);
@@ -175,7 +175,7 @@ xmpError_t XMPAPI xmpIntegersShfAsync(xmpHandle_t handle, xmpIntegers_t c, const
 
   xmpLimb_t *dst=  (a==c) ? (xmpLimb_t*) handle->scratch : c->slimbs;
 
-  if(attrib.memoryType==cudaMemoryTypeHost) {
+  if(attrib.type==cudaMemoryTypeHost) {
     src=(int32_t*)((char*)handle->scratch+scratch_size_out);
     cudaMemcpyAsync(src,shift,scratch_size_shift,cudaMemcpyHostToDevice,handle->stream);
   }
@@ -571,14 +571,14 @@ xmpError_t XMPAPI xmpIntegersPopcAsync(xmpHandle_t handle, uint32_t *c, const xm
   if(cerror!=cudaSuccess) {
     if(cerror==cudaErrorInvalidValue) {
       cudaGetLastError();  //reset to cudaSuccess
-      attrib.memoryType=cudaMemoryTypeHost;
+      attrib.type=cudaMemoryTypeHost;
     } else {
       return xmpErrorCuda;
     }
   }
 
   uint32_t *dst=c;
-  if(attrib.memoryType==cudaMemoryTypeHost) {
+  if(attrib.type==cudaMemoryTypeHost) {
     error=xmpSetNecessaryScratchSize(handle, count*sizeof(uint32_t));
     if(error!=xmpErrorSuccess)
       return error;
@@ -598,7 +598,7 @@ xmpError_t XMPAPI xmpIntegersPopcAsync(xmpHandle_t handle, uint32_t *c, const xm
   configureActiveBlocks(handle, blocks, threads, strided_popc_kernel<GSL>);
   strided_popc_kernel<GSL><<<blocks, threads, 0, handle->stream>>>(popc_arguments, count);
 
-  if(attrib.memoryType==cudaMemoryTypeHost) {
+  if(attrib.type==cudaMemoryTypeHost) {
     cudaMemcpyAsync(c,dst,sizeof(uint32_t)*count,cudaMemcpyDefault,handle->stream);
   }
   return xmpErrorSuccess;

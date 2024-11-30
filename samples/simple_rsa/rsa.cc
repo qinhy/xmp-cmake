@@ -27,22 +27,29 @@ IN THE SOFTWARE.
 #include <sys/time.h>
 #endif
 
+#include <windows.h> // For Windows-specific timing functions
+#include <ctime>     // For CLOCKS_PER_SEC if needed
+
 static double wallclock(void)
 {
-  double t;
+    double t;
 #ifdef _WIN32
-  t = clock()/(double)CLOCKS_PER_SEC;
+    LARGE_INTEGER freq, counter;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&counter);
+    t = (double)counter.QuadPart / (double)freq.QuadPart;
 #else
-  struct timeval tv;
-  struct timezone tz;
+    struct timeval tv;
+    struct timezone tz;
 
-  gettimeofday(&tv, &tz);
+    gettimeofday(&tv, &tz);
 
-  t = (double)tv.tv_sec;
-  t += ((double)tv.tv_usec)/1000000.0;
+    t = (double)tv.tv_sec;
+    t += ((double)tv.tv_usec) / 1000000.0;
 #endif
-  return t;
+    return t;
 }
+
 
 
 #define XMP_CHECK_ERROR(fun) \
