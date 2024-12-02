@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.10)
 project(XMP)
 
 # Set C++ standard
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -D_ITERATOR_DEBUG_LEVEL=2")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -D_ITERATOR_DEBUG_LEVEL=0")
+
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -23,6 +26,8 @@ endif()
 
 # Add executable (if applicable)
 add_executable(simple_rsa ${PROJECT_SOURCE_DIR}/samples/simple_rsa/rsa.cpp)
+# add_executable(crt_rsa ${PROJECT_SOURCE_DIR}/samples/crt_rsa/rsa.cpp)
 
 # Link libraries
 target_link_libraries(simple_rsa xmp)
+# target_link_libraries(crt_rsa xmp)

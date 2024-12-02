@@ -67,209 +67,209 @@ bool operator<(Latency a, Latency b) {
     return a.instances_per_sm>b.instances_per_sm;
 }
 
-void compute_and_add_latencies(xmpHandle_t handle, int alg, vector<Latency>& latencies, xmpIntegers_t out, xmpIntegers_t a, xmpIntegers_t exp, xmpIntegers_t mod ) {
+// void compute_and_add_latencies(xmpHandle_t handle, int alg, vector<Latency>& latencies, xmpIntegers_t out, xmpIntegers_t a, xmpIntegers_t exp, xmpIntegers_t mod ) {
 
-  xmpPowmAlgorithm algorithm=xmpPowmAlgorithms[alg];
-  uint32_t precision=out->precision;
-  uint32_t count=out->count;
-  uint32_t nlimbs=out->nlimbs;
-  uint32_t* gold = (uint32_t*)malloc(sizeof(uint32_t)*count*nlimbs);
-  uint32_t* test = (uint32_t*)malloc(sizeof(uint32_t)*count*nlimbs);
-  uint32_t* zero = (uint32_t*)malloc(sizeof(uint32_t)*count*nlimbs); 
+//   xmpPowmAlgorithm algorithm=xmpPowmAlgorithms[alg];
+//   uint32_t precision=out->precision;
+//   uint32_t count=out->count;
+//   uint32_t nlimbs=out->nlimbs;
+//   uint32_t* gold = (uint32_t*)malloc(sizeof(uint32_t)*count*nlimbs);
+//   uint32_t* test = (uint32_t*)malloc(sizeof(uint32_t)*count*nlimbs);
+//   uint32_t* zero = (uint32_t*)malloc(sizeof(uint32_t)*count*nlimbs); 
 
-  assert(gold!=0);
-  assert(test!=0);
-  assert(zero!=0);
+//   assert(gold!=0);
+//   assert(test!=0);
+//   assert(zero!=0);
 
-  int ITERS;
-  if(precision>1024)
-    ITERS=1;
-  else 
-    ITERS=5;
+//   int ITERS;
+//   if(precision>1024)
+//     ITERS=1;
+//   else 
+//     ITERS=5;
 
-  for(int i=0;i<count*nlimbs;i++)
-    zero[i]=0;
+//   for(int i=0;i<count*nlimbs;i++)
+//     zero[i]=0;
 
-#ifdef CHECK
-  //compute gold standard
-  xmpCheckError(xmpIntegersPowm(handle,out,a,exp,mod,count));
-  xmpCheckError(xmpIntegersExport(handle,gold,&nlimbs,-1,sizeof(uint32_t),-1,0,out,count));
-#endif
+// #ifdef CHECK
+//   //compute gold standard
+//   xmpCheckError(xmpIntegersPowm(handle,out,a,exp,mod,count));
+//   xmpCheckError(xmpIntegersExport(handle,gold,&nlimbs,-1,sizeof(uint32_t),-1,0,out,count));
+// #endif
 
-  cudaEvent_t start,stop;
-  cudaEventCreate(&start);
-  cudaEventCreate(&stop);
+//   cudaEvent_t start,stop;
+//   cudaEventCreate(&start);
+//   cudaEventCreate(&stop);
 
-  //compute max blocks per sm
-  uint32_t max_blocks_sm, instances_per_block;
-  algorithm.pfunc(handle,out,a,exp,mod,0,count,out->slimbs,&instances_per_block,&max_blocks_sm);
+//   //compute max blocks per sm
+//   uint32_t max_blocks_sm, instances_per_block;
+//   algorithm.pfunc(handle,out,a,exp,mod,0,count,out->slimbs,&instances_per_block,&max_blocks_sm);
 
-  for(int blocks_sm=1;blocks_sm<=max_blocks_sm*WAVES;blocks_sm++) {
-    //compute instances
-    uint32_t count = smCount*blocks_sm*instances_per_block;
+//   for(int blocks_sm=1;blocks_sm<=max_blocks_sm*WAVES;blocks_sm++) {
+//     //compute instances
+//     uint32_t count = smCount*blocks_sm*instances_per_block;
 
-    //Temporary work around for indexing bug
-    if(count> 0x7FFFFF*8/precision) {
-      continue;
-    }
+//     //Temporary work around for indexing bug
+//     if(count> 0x7FFFFF*8/precision) {
+//       continue;
+//     }
 
-    xmpCheckError(xmpIntegersImport(handle,out,nlimbs,-1,sizeof(xmpLimb_t),-1,0,zero,count));
+//     xmpCheckError(xmpIntegersImport(handle,out,nlimbs,-1,sizeof(xmpLimb_t),-1,0,zero,count));
 
-    //warm up
-    xmpCheckError(algorithm.pfunc(handle,out,a,exp,mod,0,count,out->slimbs,NULL,NULL));
-    //read back gold standard
-    xmpCheckError(xmpIntegersExport(handle,test,&nlimbs,-1,sizeof(uint32_t),-1,0,out,count)); //may change format type
+//     //warm up
+//     xmpCheckError(algorithm.pfunc(handle,out,a,exp,mod,0,count,out->slimbs,NULL,NULL));
+//     //read back gold standard
+//     xmpCheckError(xmpIntegersExport(handle,test,&nlimbs,-1,sizeof(uint32_t),-1,0,out,count)); //may change format type
   
-    cudaEventRecord(start);
-    for(int i=0;i<ITERS;i++) {
-      xmpCheckError(algorithm.pfunc(handle,out,a,exp,mod,0,count,out->slimbs,NULL,NULL));
-    }
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    cudaCheckError();
+//     cudaEventRecord(start);
+//     for(int i=0;i<ITERS;i++) {
+//       xmpCheckError(algorithm.pfunc(handle,out,a,exp,mod,0,count,out->slimbs,NULL,NULL));
+//     }
+//     cudaEventRecord(stop);
+//     cudaEventSynchronize(stop);
+//     cudaCheckError();
 
-#ifdef CHECK
-    //validate results
-    for(int i=0;i<count*nlimbs;i++) {
-      if(gold[i]!=test[i]) {
-        printf("             ERROR i: %d (%d, %d), alg: %d, precision: %d, count: %d, nlimbs: %d, gold: %08x, test: %08\n", i, i/nlimbs,i%nlimbs, alg, precision, count, nlimbs, gold[i], test[i]);
-        goto next;
-      }
-    }
-    //validate results
-#endif
+// #ifdef CHECK
+//     //validate results
+//     for(int i=0;i<count*nlimbs;i++) {
+//       if(gold[i]!=test[i]) {
+//         printf("             ERROR i: %d (%d, %d), alg: %d, precision: %d, count: %d, nlimbs: %d, gold: %08x, test: %08\n", i, i/nlimbs,i%nlimbs, alg, precision, count, nlimbs, gold[i], test[i]);
+//         goto next;
+//       }
+//     }
+//     //validate results
+// #endif
 
-    float time_ms, time_s;
-    cudaEventElapsedTime(&time_ms,start,stop);
-    time_s = time_ms / 1e3;
-    latencies.push_back(Latency(alg,time_s/ITERS,count/smCount));
-#ifdef CHECK
-next:
-#endif
-    cudaCheckError();
-  }
+//     float time_ms, time_s;
+//     cudaEventElapsedTime(&time_ms,start,stop);
+//     time_s = time_ms / 1e3;
+//     latencies.push_back(Latency(alg,time_s/ITERS,count/smCount));
+// #ifdef CHECK
+// next:
+// #endif
+//     cudaCheckError();
+//   }
 
-  free(zero);
-  free(test);
-  free(gold);
-  cudaEventDestroy(start);
-  cudaEventDestroy(stop);
-}
+//   free(zero);
+//   free(test);
+//   free(gold);
+//   cudaEventDestroy(start);
+//   cudaEventDestroy(stop);
+// }
 
 
-int main() {
+// int main() {
 
-  xmpHandle_t handle;
+//   xmpHandle_t handle;
 
-  xmpCheckError(xmpHandleCreate(&handle));
-  xmpExecutionPolicy_t policy;
-  xmpCheckError(xmpExecutionPolicyCreate(handle, &policy));
-  //xmpCheckError(xmpExecutionPolicySetParameter(handle,policy,xmpAlgorithm,xmpAlgorithmDistributedMP));
-  //xmpCheckError(xmpExecutionPolicySetParameter(handle,policy,xmpAlgorithm,xmpAlgorithmDigitMP));
-  xmpCheckError(xmpHandleSetExecutionPolicy(handle,policy));
-  //get arch, get #sms
-  arch = handle->arch;
-  smCount = handle->smCount;
+//   xmpCheckError(xmpHandleCreate(&handle));
+//   xmpExecutionPolicy_t policy;
+//   xmpCheckError(xmpExecutionPolicyCreate(handle, &policy));
+//   //xmpCheckError(xmpExecutionPolicySetParameter(handle,policy,xmpAlgorithm,xmpAlgorithmDistributedMP));
+//   //xmpCheckError(xmpExecutionPolicySetParameter(handle,policy,xmpAlgorithm,xmpAlgorithmDigitMP));
+//   xmpCheckError(xmpHandleSetExecutionPolicy(handle,policy));
+//   //get arch, get #sms
+//   arch = handle->arch;
+//   smCount = handle->smCount;
   
-  char sarch[100];
+//   char sarch[100];
 
-  if(arch<50) 
-    sprintf(sarch,"kepler");
-  else
-    sprintf(sarch,"maxwell");
+//   if(arch<50) 
+//     sprintf(sarch,"kepler");
+//   else
+//     sprintf(sarch,"maxwell");
 
 
-  char filename[100];
-  sprintf(filename,"tune_%s.h",sarch);
+//   char filename[100];
+//   sprintf(filename,"tune_%s.h",sarch);
 
-  FILE *file = fopen(filename,"w");
+//   FILE *file = fopen(filename,"w");
   
-  vector<uint32_t> counts(xmpPowmPrecisionsCount);
+//   vector<uint32_t> counts(xmpPowmPrecisionsCount);
 
-  for(int p=0;p<xmpPowmPrecisionsCount;p++) {
-    uint32_t P=xmpPowmPrecisions[p];
-    float max_occupancy=1;
-    if(P>4096)
-      max_occupancy=.5;
-    //max instances in a single wave at x% occupancy
-    uint32_t max_instances = smCount * 2048 * WAVES * max_occupancy;
-    uint32_t a_instances= max_instances;
-    uint32_t exp_instances = 1;
-    uint32_t mod_instances = 1;
-    uint32_t out_instances = max_instances;
+//   for(int p=0;p<xmpPowmPrecisionsCount;p++) {
+//     uint32_t P=xmpPowmPrecisions[p];
+//     float max_occupancy=1;
+//     if(P>4096)
+//       max_occupancy=.5;
+//     //max instances in a single wave at x% occupancy
+//     uint32_t max_instances = smCount * 2048 * WAVES * max_occupancy;
+//     uint32_t a_instances= max_instances;
+//     uint32_t exp_instances = 1;
+//     uint32_t mod_instances = 1;
+//     uint32_t out_instances = max_instances;
 
-    vector<Latency> latencies;
-    xmpIntegers_t a, exp, mod, out;
-    uint32_t nlimbs = P/(sizeof(uint32_t)*8);
+//     vector<Latency> latencies;
+//     xmpIntegers_t a, exp, mod, out;
+//     uint32_t nlimbs = P/(sizeof(uint32_t)*8);
 
-    uint32_t *limbs = (uint32_t*)malloc(nlimbs*sizeof(uint32_t)*a_instances);
-    assert(limbs!=0);
+//     uint32_t *limbs = (uint32_t*)malloc(nlimbs*sizeof(uint32_t)*a_instances);
+//     assert(limbs!=0);
 
-    xmpCheckError(xmpIntegersCreate(handle, &a, P, a_instances));
-    xmpCheckError(xmpIntegersCreate(handle, &exp, P, exp_instances));
-    xmpCheckError(xmpIntegersCreate(handle, &mod, P, mod_instances));
-    xmpCheckError(xmpIntegersCreate(handle, &out, P, out_instances));
+//     xmpCheckError(xmpIntegersCreate(handle, &a, P, a_instances));
+//     xmpCheckError(xmpIntegersCreate(handle, &exp, P, exp_instances));
+//     xmpCheckError(xmpIntegersCreate(handle, &mod, P, mod_instances));
+//     xmpCheckError(xmpIntegersCreate(handle, &out, P, out_instances));
 
-    //generate random data
-    for(int i=0;i<nlimbs*a_instances;i++) limbs[i]=rand32();
-    xmpCheckError(xmpIntegersImport(handle,a,nlimbs,-1,sizeof(xmpLimb_t),-1,0,limbs,a_instances));
+//     //generate random data
+//     for(int i=0;i<nlimbs*a_instances;i++) limbs[i]=rand32();
+//     xmpCheckError(xmpIntegersImport(handle,a,nlimbs,-1,sizeof(xmpLimb_t),-1,0,limbs,a_instances));
     
-    for(int i=0;i<nlimbs*exp_instances;i++) limbs[i]=rand32();
-    xmpCheckError(xmpIntegersImport(handle,exp,nlimbs,-1,sizeof(xmpLimb_t),-1,0,limbs,exp_instances));
+//     for(int i=0;i<nlimbs*exp_instances;i++) limbs[i]=rand32();
+//     xmpCheckError(xmpIntegersImport(handle,exp,nlimbs,-1,sizeof(xmpLimb_t),-1,0,limbs,exp_instances));
     
-    for(int i=0;i<nlimbs*mod_instances;i++) limbs[i]=rand32();
+//     for(int i=0;i<nlimbs*mod_instances;i++) limbs[i]=rand32();
     
-    for(int i=0;i<mod_instances;i++) limbs[i*nlimbs]|=0x1;  //ensure mod is odd
+//     for(int i=0;i<mod_instances;i++) limbs[i*nlimbs]|=0x1;  //ensure mod is odd
 
-    xmpCheckError(xmpIntegersImport(handle,mod,nlimbs,-1,sizeof(xmpLimb_t),-1,0,limbs,mod_instances));
+//     xmpCheckError(xmpIntegersImport(handle,mod,nlimbs,-1,sizeof(xmpLimb_t),-1,0,limbs,mod_instances));
 
-    for(int i=0;i<xmpPowmAlgorithmsCount;i++) {
-      xmpPowmAlgorithm alg=xmpPowmAlgorithms[i];
-      if(P>=alg.min_precision && P<=alg.max_precision) {
-        compute_and_add_latencies(handle,i,latencies,out,a,exp,mod);
-      }
-    }
-    xmpCheckError(xmpIntegersDestroy(handle, a));
-    xmpCheckError(xmpIntegersDestroy(handle, exp));
-    xmpCheckError(xmpIntegersDestroy(handle, mod));
-    xmpCheckError(xmpIntegersDestroy(handle, out));
+//     for(int i=0;i<xmpPowmAlgorithmsCount;i++) {
+//       xmpPowmAlgorithm alg=xmpPowmAlgorithms[i];
+//       if(P>=alg.min_precision && P<=alg.max_precision) {
+//         compute_and_add_latencies(handle,i,latencies,out,a,exp,mod);
+//       }
+//     }
+//     xmpCheckError(xmpIntegersDestroy(handle, a));
+//     xmpCheckError(xmpIntegersDestroy(handle, exp));
+//     xmpCheckError(xmpIntegersDestroy(handle, mod));
+//     xmpCheckError(xmpIntegersDestroy(handle, out));
 
     
-    free(limbs);
+//     free(limbs);
 
-    sort(latencies.begin(),latencies.end());
-#if 1
-    printf("Precision: %d, latency list:\n",P);
-    for(int i=0;i<latencies.size();i++) {
-      printf("%d alg: %d, count: %d, instances_per_sm: %d: latency %f, throughput: %e\n", i, latencies[i].alg_index, smCount*latencies[i].instances_per_sm, latencies[i].instances_per_sm, latencies[i].latency,  (smCount*latencies[i].instances_per_sm)/latencies[i].latency);
-    }
-#endif
-    fprintf(file,"const Latency powm_%d_%s[]={\n",P,sarch);
-    for(int i=0;i<latencies.size();i++) {
-      fprintf(file,"    Latency(%d,%f,%d),\n",latencies[i].alg_index, latencies[i].latency, latencies[i].instances_per_sm);
-    }
-    fprintf(file,"};\n");
+//     sort(latencies.begin(),latencies.end());
+// #if 1
+//     printf("Precision: %d, latency list:\n",P);
+//     for(int i=0;i<latencies.size();i++) {
+//       printf("%d alg: %d, count: %d, instances_per_sm: %d: latency %f, throughput: %e\n", i, latencies[i].alg_index, smCount*latencies[i].instances_per_sm, latencies[i].instances_per_sm, latencies[i].latency,  (smCount*latencies[i].instances_per_sm)/latencies[i].latency);
+//     }
+// #endif
+//     fprintf(file,"const Latency powm_%d_%s[]={\n",P,sarch);
+//     for(int i=0;i<latencies.size();i++) {
+//       fprintf(file,"    Latency(%d,%f,%d),\n",latencies[i].alg_index, latencies[i].latency, latencies[i].instances_per_sm);
+//     }
+//     fprintf(file,"};\n");
 
-    counts[p]=latencies.size();
-   }
+//     counts[p]=latencies.size();
+//    }
 
 
-  fprintf(file,"const Latency* powm_tbl_%s[]={",sarch);
-  for(int p=0;p<xmpPowmPrecisionsCount;p++) {
-    uint32_t P=xmpPowmPrecisions[p];
-    fprintf(file,"powm_%d_%s,",P,sarch);
-  }
-  fprintf(file,"};\n");
+//   fprintf(file,"const Latency* powm_tbl_%s[]={",sarch);
+//   for(int p=0;p<xmpPowmPrecisionsCount;p++) {
+//     uint32_t P=xmpPowmPrecisions[p];
+//     fprintf(file,"powm_%d_%s,",P,sarch);
+//   }
+//   fprintf(file,"};\n");
 
-  fprintf(file,"const uint32_t powm_tbl_%s_counts[]={",sarch);
-  for(int p=0;p<xmpPowmPrecisionsCount;p++) {
-    fprintf(file,"%d,",counts[p]);
-  }
-  fprintf(file,"};\n");
+//   fprintf(file,"const uint32_t powm_tbl_%s_counts[]={",sarch);
+//   for(int p=0;p<xmpPowmPrecisionsCount;p++) {
+//     fprintf(file,"%d,",counts[p]);
+//   }
+//   fprintf(file,"};\n");
  
-  fclose(file);
+//   fclose(file);
 
-  printf("File: %s successfully written\n",filename);
-  xmpCheckError(xmpExecutionPolicyDestroy(handle, policy));
-  xmpCheckError(xmpHandleDestroy(handle));
-}
+//   printf("File: %s successfully written\n",filename);
+//   xmpCheckError(xmpExecutionPolicyDestroy(handle, policy));
+//   xmpCheckError(xmpHandleDestroy(handle));
+// }
