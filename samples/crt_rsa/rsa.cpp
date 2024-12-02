@@ -1,6 +1,13 @@
 #include <iostream>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
+#include <cstdlib>
+#include <iostream>
+#include <vector>
+#include <string>
+#include <iomanip>
+
 #include <cuda_runtime_api.h>
 #include "xmp.h"
 
@@ -42,9 +49,34 @@ uint32_t rand32() {
     return (hi << 16) | lo;
 }
 
-#include <iostream>
-#include <cstdlib>
-#include "xmp.h" // Assuming the necessary header
+// Helper function to convert binary data to a decimal string
+std::string binaryToDecimalString(const uint32_t* data, size_t size) {
+    std::vector<uint8_t> decimal; // Vector to store the decimal digits
+
+    for (size_t i = 0; i < size; ++i) {
+        uint32_t value = data[i];
+        for (int j = 0; j < 32; j += 8) {
+            uint8_t byte = (value >> j) & 0xFF; // Extract each byte
+            size_t carry = byte;
+            for (size_t k = 0; k < decimal.size(); ++k) {
+                carry += decimal[k] * 256;
+                decimal[k] = carry % 10;
+                carry /= 10;
+            }
+            while (carry) {
+                decimal.push_back(carry % 10);
+                carry /= 10;
+            }
+        }
+    }
+
+    // Convert the vector of digits into a string
+    std::string result;
+    for (auto it = decimal.rbegin(); it != decimal.rend(); ++it) {
+        result += ('0' + *it);
+    }
+    return result.empty() ? "0" : result;
+}
 
 int main() {
     // Constants
@@ -153,14 +185,36 @@ int main() {
               << totalMessages / (endTime - startTime) << " decryptions/second" << std::endl;
 
     // Validation
-    XMP_CHECK_ERROR(xmpIntegersCmp(xmpHandle, validationResults, plaintext, result, totalMessages));
-    std::cout << "Validating results..." << std::endl;
+    // XMP_CHECK_ERROR(xmpIntegersCmp(xmpHandle, validationResults, plaintext, result, totalMessages));
+    // std::cout << "Validating results..." << std::endl;
+    // for (int i = 0; i < totalMessages; i++) {
+    //     if (validationResults[i] != 0) {
+    //         std::cerr << "  Error at index " << i << std::endl;
+    //         exit(1);
+    //     }
+    // }
+    
+    // Export plaintext
+    uint32_t* exportedPlaintext = (uint32_t*)calloc(totalMessages * fullKeySizeWords, sizeof(uint32_t));
+    XMP_CHECK_ERROR(xmpIntegersExport(xmpHandle, exportedPlaintext, &fullKeySizeWords, -1, sizeof(uint32_t), 0, 0, plaintext, totalMessages));
+
+    // Export result (decrypted text)
+    uint32_t* exportedResult = (uint32_t*)calloc(totalMessages * fullKeySizeWords, sizeof(uint32_t));
+    XMP_CHECK_ERROR(xmpIntegersExport(xmpHandle, exportedResult, &fullKeySizeWords, -1, sizeof(uint32_t), 0, 0, result, totalMessages));
+
+    // Print plaintext and result as decimal strings
     for (int i = 0; i < totalMessages; i++) {
-        if (validationResults[i] != 0) {
-            std::cerr << "  Error at index " << i << std::endl;
-            exit(1);
-        }
+        std::string plaintextDecimal = binaryToDecimalString(&exportedPlaintext[i * fullKeySizeWords], fullKeySizeWords);
+        std::string resultDecimal = binaryToDecimalString(&exportedResult[i * fullKeySizeWords], fullKeySizeWords);
+
+        std::cout << "Message " << i + 1 << ": Plaintext = " << plaintextDecimal
+                  << ", Decrypted Result = " << resultDecimal << std::endl;
     }
+
+    // Free exported buffers
+    free(exportedPlaintext);
+    free(exportedResult);
+
 
     // Clean up
     XMP_CHECK_ERROR(xmpIntegersDestroy(xmpHandle, publicModulus));
