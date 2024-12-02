@@ -51,7 +51,7 @@ uint32_t rand32() {
 }
 
 int main() {
-    const int count = 100000;
+    const int count = 1000;
     const int bits = 2048;
 
     double start, end;

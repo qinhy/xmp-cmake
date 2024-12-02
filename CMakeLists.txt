@@ -26,8 +26,8 @@ endif()
 
 # Add executable (if applicable)
 add_executable(simple_rsa ${PROJECT_SOURCE_DIR}/samples/simple_rsa/rsa.cpp)
-# add_executable(crt_rsa ${PROJECT_SOURCE_DIR}/samples/crt_rsa/rsa.cpp)
+add_executable(crt_rsa ${PROJECT_SOURCE_DIR}/samples/crt_rsa/rsa.cpp)
 
 # Link libraries
 target_link_libraries(simple_rsa xmp)
-# target_link_libraries(crt_rsa xmp)
+target_link_libraries(crt_rsa xmp)
