@@ -67,6 +67,7 @@ int main() {
   for(i=0;i<N;i++) {
     for(w=0;w<limbs;w++) {
       b[i*limbs+w]=rand();
+      printf("%d\n",b[i*limbs+w]);
     }
   }
 
