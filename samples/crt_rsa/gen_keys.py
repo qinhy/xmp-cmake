@@ -77,16 +77,58 @@ def generate_small_rsa_key(key_size_bits=64):
 
     # Return RSA key components in string format
     return {
-        "modulusString": str(n),
-        "exponentString": str(e),
-        "primePString": str(p),
-        "primeQString": str(q),
-        "dpString": str(dp),
-        "dqString": str(dq),
-        "coefficientPString": str(CoefficientP),
-        "coefficientQString": str(CoefficientQ),
+        "Modulus": n,
+        "Exponent": e,
+        "PrimeP": p,
+        "PrimeQ": q,
+        "DP": dp,
+        "DQ": dq,
+        "CoefficientP": CoefficientP,
+        "CoefficientQ": CoefficientQ,
     }
 
+# Function to convert integers to 64-bit binary strings
+def to_bit_binary(value, bits=64):
+    return format(value, f'0{bits}b')
+
+import base64
+
+# Function to encode a message in base64 and convert it to a binary string
+def encode_message_to_2048_binary(message):
+    # Encode the message as base64
+    base64_encoded = base64.b64encode(message.encode())
+    
+    # Convert the base64-encoded message to an integer
+    base64_integer = int.from_bytes(base64_encoded, 'big')
+    
+    # Convert the integer to a 2048-bit binary string
+    return to_bit_binary(base64_integer,2048)
+
+# Function to revert a 2048-bit binary string back to the original message
+def revert_2048_binary_to_message(binary_2048):
+    # Convert the binary string back to an integer
+    original_integer = int(binary_2048, 2)
+    
+    # Convert the integer back to bytes
+    original_bytes = original_integer.to_bytes((original_integer.bit_length() + 7) // 8, 'big')
+    
+    # Decode the base64 bytes back to the original message
+    decoded_message = base64.b64decode(original_bytes).decode()
+    
+    return decoded_message
+
+
+# Example usage
+message = '''
+Technology serves as a bridge between imagination and reality,
+empowering us to solve complex problems, connect across boundaries,
+and build a future where innovation thrives.'''
+
+binary_output = encode_message_to_2048_binary(message)
+print(binary_output)
+print(revert_2048_binary_to_message(binary_output))
 # Generate an example RSA key
-# rsa_key = generate_small_rsa_key()
+# key_size_bits=2048
+# rsa_key = generate_small_rsa_key(key_size_bits)
 # print(rsa_key)
+# print({key: to_bit_binary(value,key_size_bits) for key, value in rsa_key.items()})

@@ -1,10 +1,21 @@
 #include <iostream>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <vector>
 #include <string>
 #include <iomanip>
 #include <cstdint>
+#include <algorithm> // For std::fill
+#include <iostream>   // For input/output operations
+#include <vector>     // For std::vector
+#include <string>     // For std::string
+#include <sstream>    // For std::stringstream
+#include <iomanip>    // For std::setprecision and formatting
+#include <cstdlib>    // For std::rand, std::srand, and general utilities
+#include <cmath>      // For mathematical functions
+#include <chrono>     // For time-related utilities
+#include <bitset>     // For binary manipulation with std::bitset
 
 #include <cuda_runtime_api.h>
 #include "xmp.h"
@@ -43,301 +54,383 @@ static double wallclock()
         }                                                                                                     \
     }
 
-uint32_t rand32()
+// // Constants
+// constexpr int KEY_BITS = 2048;
+// constexpr int HALF_KEY_BITS = KEY_BITS / 2;
+
+// // Memory size calculations
+// constexpr uint32_t FULL_KEY_SIZE_WORDS = KEY_BITS / 8 / sizeof(uint32_t);
+// constexpr uint32_t HALF_KEY_SIZE_WORDS = (FULL_KEY_SIZE_WORDS + 1) / 2; // Rounded up
+// constexpr size_t FULL_KEY_SIZE_BYTES = FULL_KEY_SIZE_WORDS * sizeof(uint32_t);
+// constexpr size_t HALF_KEY_SIZE_BYTES = FULL_KEY_SIZE_BYTES / 2;
+
+class CudaVariableManager
 {
-    uint32_t lo = rand() & 0xffff;
-    uint32_t hi = rand() & 0xffff;
-    return (hi << 16) | lo;
-}
-
-// Helper function to convert decimal string to uint32_t array
-void importDecimalString(uint32_t *array, size_t arraySize, const char *decimalString)
-{
-    // Initialize the array
-    memset(array, 0, arraySize * sizeof(uint32_t));
-
-    // Arbitrary-precision storage for processing
-    char *number = strdup(decimalString); // Duplicate string for modification
-    size_t len = strlen(number);
-
-    // Iterate and extract 32-bit chunks in little-endian order
-    for (size_t i = 0; i < arraySize; i++)
+public:
+    // Constructor: initializes variables and allocates memory
+    CudaVariableManager(uint32_t fullKeySizeBits)
+        : fullKeySizeBits_(fullKeySizeBits),
+          fullKeySizeBytes_(fullKeySizeBits_ / 8),
+          fullKeySizeWords_(fullKeySizeBytes_ / sizeof(uint32_t)),
+          halfKeyBits_(fullKeySizeBits_ / 2)
     {
-        if (len == 0)
-            break;
+        XMP_CHECK_ERROR(xmpHandleCreate(&xmpHandle_));
+    }
 
-        // Process the number string as a whole, extracting 32-bit chunks
-        uint64_t remainder = 0;
+    // Destructor: ensures proper cleanup
+    ~CudaVariableManager()
+    {
+        clear();
+        XMP_CHECK_ERROR(xmpHandleDestroy(xmpHandle_));
+    }
 
-        // Simulate division of the large number string by 2^32 (4294967296)
-        for (size_t j = 0; j < len; j++)
+    void importBitString(std::vector<uint32_t> &data, const std::string &bitString)
+    {
+        const size_t bitsPerElement = 32; // Number of bits per uint32_t
+
+        // Ensure the bitString's size is a multiple of 32 by padding with zeros if necessary
+        size_t paddedSize = ((bitString.size() + bitsPerElement - 1) / bitsPerElement) * bitsPerElement;
+        std::string paddedBitString = std::string(paddedSize - bitString.size(), '0') + bitString;
+
+        // Convert each 32-bit chunk of the bit string into a uint32_t value
+        for (size_t i = 0; i < paddedSize; i += bitsPerElement)
         {
-            remainder = remainder * 10 + (number[j] - '0');
-            number[j] = (remainder / 4294967296) + '0'; // Update number with quotient
-            remainder %= 4294967296;                    // Update remainder
+            std::string chunk = paddedBitString.substr(i, bitsPerElement);
+            uint32_t value = static_cast<uint32_t>(std::bitset<32>(chunk).to_ulong());
+            data.push_back(value);
         }
 
-        // Find the new length (trim leading zeros)
-        char *newStart = number;
-        while (*newStart == '0' && *newStart != '\0')
-            newStart++;
-        len = strlen(newStart);
-        memmove(number, newStart, len + 1);
-
-        // Store the least significant 32 bits of remainder in the array
-        array[i] = (uint32_t)remainder;
+        // Reverse the vector because the input bit string represents numbers in reverse order
+        std::reverse(data.begin(), data.end());
     }
 
-    free(number);
-}
-// Helper function to convert binary data to a decimal string
-std::string binaryToDecimalString(const uint32_t *data, size_t size)
-{
-    std::vector<uint8_t> decimal; // Vector to store the decimal digits
-
-    for (size_t i = 0; i < size; ++i)
+    // Add a new variable (allocates memory for host and CUDA)
+    auto addVariable(const std::string &key, std::string varString="", uint32_t bits = 0)
     {
-        uint32_t value = data[i];
-        for (int j = 0; j < 32; j += 8)
+        if (cudaVars_.find(key) != cudaVars_.end())
         {
-            uint8_t byte = (value >> j) & 0xFF; // Extract each byte
-            size_t carry = byte;
-            for (size_t k = 0; k < decimal.size(); ++k)
-            {
-                carry += decimal[k] * 256;
-                decimal[k] = carry % 10;
-                carry /= 10;
+            std::cout << "Variable already exists: " + key << std::endl;
+            throw std::runtime_error("Variable already exists: " + key);
+        }
+
+        // Calculate the size dynamically
+        if (bits == 0)
+            bits = fullKeySizeBits_;
+
+        if (varString.length() != bits){
+            if(bits>varString.length()){                
+                auto tmp = std::string(bits-varString.length(), '0'); 
+                varString = tmp + varString;
             }
-            while (carry)
-            {
-                decimal.push_back(carry % 10);
-                carry /= 10;
+            else{
+                varString = std::string(varString.begin() + bits, varString.end());
             }
+        }
+
+        if (bits != varString.length())
+        {
+            std::cout << "size != varString.length()" << std::endl;
+            throw std::runtime_error("size != varString.length()");
+        }
+            
+        hostTmp_.resize((bits / 8 / sizeof(uint32_t)), 0);
+        importBitString(hostTmp_, varString);
+
+        // Allocate CUDA variable
+        auto cudaVar = std::make_shared<xmpIntegers_t>();
+        XMP_CHECK_ERROR(xmpIntegersCreate(xmpHandle_, &(*cudaVar), bits, 1));
+        
+        // std::cout << key << ": " << bits << std::endl;
+        XMP_CHECK_ERROR(xmpIntegersImport(xmpHandle_, *cudaVar, (uint32_t)(bits / 8 / sizeof(uint32_t)), -1, sizeof(uint32_t), 0, 0, hostTmp_.data(), 1));
+        cudaVars_[key] = cudaVar;
+        return cudaVar;
+    }
+
+    // Get CUDA variable handle
+    auto getCudaVariable(const std::string &key) const
+    {
+        auto it = cudaVars_.find(key);
+        if (it == cudaVars_.end())
+        {
+            std::cout << "CUDA variable not found: " + key << std::endl;
+            throw std::runtime_error("CUDA variable not found: " + key);
+        }
+        return it->second;
+    }
+
+    std::string binaryToBitString(const std::vector<uint32_t> &data)
+    {
+        size_t size = data.size();
+        std::ostringstream bitStream;
+        for (size_t i = 0; i < size; ++i)
+        {
+            // Convert each uint32_t value to a 32-bit binary string
+            bitStream << std::bitset<32>(data[size - i - 1]);
+        }
+        return bitStream.str();
+    }
+
+    auto exportCudaVariable(const std::string &key)
+    {
+        auto var = getCudaVariable(key);
+        hostTmp_.resize(fullKeySizeWords_, 0);
+        std::fill(hostTmp_.begin(), hostTmp_.end(), 0);
+        auto array = hostTmp_.data();
+        auto arraySize = hostTmp_.size();
+
+        uint32_t fullKeySizeWords = fullKeySizeWords_;
+        XMP_CHECK_ERROR(xmpIntegersExport(xmpHandle_, hostTmp_.data(), &fullKeySizeWords, -1, sizeof(uint32_t), 0, 0, *var, 1));
+
+        std::string varString = binaryToBitString(hostTmp_);
+        return varString;
+    }
+    // Perform multiplication on two CUDA variables
+    void mulVariables(const std::string &keyResult, const std::string &keyA, const std::string &keyB)
+    {
+
+        // Get handles for the input variables
+        auto varA = getCudaVariable(keyA);
+        auto varB = getCudaVariable(keyB);
+
+        // Create a new CUDA variable for the result
+        auto varResult = addVariable(keyResult);
+
+        // Perform the multiplication operation
+        XMP_CHECK_ERROR(xmpIntegersMul(xmpHandle_, *varResult, *varA, *varB, 1));
+
+        // Store the result variable
+        cudaVars_[keyResult] = varResult;
+    }
+
+    // Function to perform RSA encryption
+    void rsaEncrypt(const std::string &keyResult, const std::string &keyPlaintext,
+                    const std::string &keyPublicExponent, const std::string &keyPublicModulus,
+                    uint32_t totalMessages = 1)
+    {
+        // Retrieve required variables
+        auto plaintext = getCudaVariable(keyPlaintext);
+        auto publicExponent = getCudaVariable(keyPublicExponent);
+        auto publicModulus = getCudaVariable(keyPublicModulus);
+
+        // Create a new CUDA variable for the ciphertext result
+        auto ciphertext = addVariable(keyResult);
+
+        // Perform RSA encryption: ciphertext = (plaintext ^ publicExponent) % publicModulus
+        XMP_CHECK_ERROR(xmpIntegersPowm(xmpHandle_, *ciphertext, *plaintext, *publicExponent, *publicModulus, totalMessages));
+
+        // Store the result variable
+        cudaVars_[keyResult] = ciphertext;
+    }
+
+    // Function to perform RSA decryption
+    void rsaDecrypt(const std::string &keyResult, const std::string &keyCiphertext,
+                    const std::string &keyPrimeP, const std::string &keyPrimeQ,
+                    const std::string &keyDp, const std::string &keyDq,
+                    const std::string &keyCoefficientP, const std::string &keyCoefficientQ,
+                    const std::string &keyPublicModulus, uint32_t totalMessages = 1)
+    {
+        
+        // std::cout << "Retrieve required variables" << std::endl;
+        auto ciphertext = getCudaVariable(keyCiphertext);
+        auto primeP = getCudaVariable(keyPrimeP);
+        auto primeQ = getCudaVariable(keyPrimeQ);
+        auto dp = getCudaVariable(keyDp);
+        auto dq = getCudaVariable(keyDq);
+        auto coefficientP = getCudaVariable(keyCoefficientP);
+        auto coefficientQ = getCudaVariable(keyCoefficientQ);
+        auto publicModulus = getCudaVariable(keyPublicModulus);
+
+        // std::cout << "Allocate memory for temporary variables" << std::endl;
+        auto scratchSpaceResult =   addVariable("scratchSpaceResult", "", halfKeyBits_);
+        auto partialPlainP =        addVariable("partialPlainP", "", halfKeyBits_);
+        auto partialPlainQ =        addVariable("partialPlainQ", "", halfKeyBits_);
+        auto partialCipherP =       addVariable("partialCipherP", "", fullKeySizeBits_ + halfKeyBits_);
+        auto partialCipherQ =       addVariable("partialCipherQ", "", fullKeySizeBits_ + halfKeyBits_);
+        auto result =               addVariable(keyResult, "", fullKeySizeBits_);
+
+        // std::cout << "RSA decryption steps" << std::endl;    
+        // std::cout << "Step 1: scratchSpaceResult = ciphertext mod primeP" << std::endl;
+        XMP_CHECK_ERROR(xmpIntegersMod(xmpHandle_, *scratchSpaceResult, *ciphertext, *primeP, totalMessages));
+
+        
+        // std::cout << "Step 2: partialPlainP = (scratchSpaceResult ^ dp) mod primeP" << std::endl;
+        XMP_CHECK_ERROR(xmpIntegersPowm(xmpHandle_, *partialPlainP, *scratchSpaceResult, *dp, *primeP, totalMessages));
+
+        
+        // std::cout << "Step 3: scratchSpaceResult = ciphertext mod primeQ" << std::endl;
+        XMP_CHECK_ERROR(xmpIntegersMod(xmpHandle_, *scratchSpaceResult, *ciphertext, *primeQ, totalMessages));
+
+        
+        // std::cout << "Step 4: partialPlainQ = (scratchSpaceResult ^ dq) mod primeQ" << std::endl;
+        XMP_CHECK_ERROR(xmpIntegersPowm(xmpHandle_, *partialPlainQ, *scratchSpaceResult, *dq, *primeQ, totalMessages));
+
+        
+        // std::cout << "Step 5: partialCipherP = partialPlainP * coefficientP" << std::endl;
+        XMP_CHECK_ERROR(xmpIntegersMul(xmpHandle_, *partialCipherP, *partialPlainP, *coefficientP, totalMessages));
+
+        
+        // std::cout << "Step 6: partialCipherQ = partialPlainQ * coefficientQ" << std::endl;
+        XMP_CHECK_ERROR(xmpIntegersMul(xmpHandle_, *partialCipherQ, *partialPlainQ, *coefficientQ, totalMessages));
+
+        
+        // std::cout << "Step 7: partialCipherP = partialCipherP + partialCipherQ" << std::endl;
+        XMP_CHECK_ERROR(xmpIntegersAdd(xmpHandle_, *partialCipherP, *partialCipherP, *partialCipherQ, totalMessages));
+
+        
+        // std::cout << "Step 8: result = partialCipherP mod publicModulus" << std::endl;
+        XMP_CHECK_ERROR(xmpIntegersMod(xmpHandle_, *result, *partialCipherP, *publicModulus, totalMessages));
+
+        
+        // std::cout << "Cleanup temporary variables" << std::endl;
+        removeVariable("scratchSpaceResult");
+        removeVariable("partialPlainP");
+        removeVariable("partialPlainQ");
+        removeVariable("partialCipherP");
+        removeVariable("partialCipherQ");
+    }
+
+    // Remove a variable (deallocates memory)
+    void removeVariable(const std::string &key)
+    {
+        // Remove CUDA variable
+        auto it = cudaVars_.find(key);
+        if (it != cudaVars_.end())
+        {
+            XMP_CHECK_ERROR(xmpIntegersDestroy(xmpHandle_, *it->second));
+            cudaVars_.erase(it);
         }
     }
 
-    // Convert the vector of digits into a string
-    std::string result;
-    for (auto it = decimal.rbegin(); it != decimal.rend(); ++it)
+    void clear()
     {
-        result += ('0' + *it);
+        // Clean up all managed CUDA variables
+        for (auto it = cudaVars_.begin(); it != cudaVars_.end();)
+        {
+            XMP_CHECK_ERROR(xmpIntegersDestroy(xmpHandle_, *it->second));
+            it = cudaVars_.erase(it);
+        }
     }
-    return result.empty() ? "0" : result;
-}
 
-// Constants
-constexpr int KEY_BITS = 2048;
-constexpr int HALF_KEY_BITS = KEY_BITS / 2;
+private:
+    xmpHandle_t xmpHandle_;                                          // Handle for xmp functions
+    uint32_t fullKeySizeBits_, fullKeySizeBytes_, fullKeySizeWords_, halfKeyBits_;   // Size in words
+    std::vector<uint32_t> hostTmp_;                                  // Managed hostVar array
+    std::map<std::string, std::shared_ptr<xmpIntegers_t>> cudaVars_; // CUDA variables
+};
 
-// Memory size calculations
-constexpr uint32_t FULL_KEY_SIZE_WORDS = KEY_BITS / 8 / sizeof(uint32_t);
-constexpr uint32_t HALF_KEY_SIZE_WORDS = (FULL_KEY_SIZE_WORDS + 1) / 2; // Rounded up
-constexpr size_t FULL_KEY_SIZE_BYTES = FULL_KEY_SIZE_WORDS * sizeof(uint32_t);
-constexpr size_t HALF_KEY_SIZE_BYTES = FULL_KEY_SIZE_BYTES / 2;
 
+// Example usage
 int main()
 {
-    // Constants
-    const int totalMessages = 1000;
-    const int keyBits = 2048;
-    const int halfKeyBits = keyBits / 2;
 
-    // Timing variables
-    double startTime, endTime;
+    // mulVariables
+    // {
+    //     manager.addVariable("a", "0000000011110000000000000000000000000000111100000000000000000000");
+    //     std::cout << "a : " << manager.exportCudaVariable("a") << std::endl;
+        
+    //     manager.addVariable("b", "0000000000000000000000000000000000000000000000000000000000000010");
+    //     std::cout << "b : " << manager.exportCudaVariable("b") << std::endl;
+        
+    //     manager.mulVariables("c", "a", "b");
+    //     std::cout << "c : " << manager.exportCudaVariable("c") << std::endl;        
+    // }
 
-    // Memory size calculations
-    uint32_t fullKeySizeWords = keyBits / 8 / sizeof(uint32_t);
-    uint32_t halfKeySizeWords = (fullKeySizeWords + 1) / 2; // +1 to round up
-    size_t fullKeySizeBytes = fullKeySizeWords * sizeof(uint32_t);
-    size_t halfKeySizeBytes = fullKeySizeBytes / 2;
+    // {
+    //     // 64bit
+    //     uint32_t fullKeySizeBits = 64;
+    //     uint32_t fullKeySizeBytes = fullKeySizeBits * 8;
+    //     uint32_t halfKeySizeBytes = fullKeySizeBytes / 2;
 
-    // Handle and integer objects
-    xmpHandle_t xmpHandle;
-    xmpIntegers_t publicModulus, publicExponent;   // Public key
-    xmpIntegers_t primeP, primeQ, privateExponent; // Private key
-    xmpIntegers_t plaintext, ciphertext, result;   // Messages
-    xmpIntegers_t dp, dq, coefficientP, coefficientQ;
-    xmpIntegers_t partialCipherP, partialCipherQ, partialPlainP, partialPlainQ;
-    xmpIntegers_t scratchSpaceSum, scratchSpaceResult;
+    //     // Create and manage host variable and cudaVar
+    //     CudaVariableManager manager(fullKeySizeBits);
+    //     // rsaEncrypt
+    //     manager.addVariable("Modulus",      "0000000000000000000000000000000000000001000010100110110110111111");
+    //     // std::cout << "Modulus: " << manager.exportCudaVariable("Modulus") << std::endl;
 
-    // Host data for initialization
-    uint32_t *hostModulus = (uint32_t *)calloc(1, fullKeySizeBytes);
-    uint32_t *hostExponent = (uint32_t *)calloc(1, sizeof(uint32_t));
-    uint32_t *hostPrimeP = (uint32_t *)calloc(1, halfKeySizeBytes);
-    uint32_t *hostPrimeQ = (uint32_t *)calloc(1, halfKeySizeBytes);
-    uint32_t *hostMessages = (uint32_t *)calloc(totalMessages, fullKeySizeBytes);
-    uint32_t *hostDP = (uint32_t *)calloc(1, halfKeySizeBytes);
-    uint32_t *hostDQ = (uint32_t *)calloc(1, halfKeySizeBytes);
-    uint32_t *hostCoefficientP = (uint32_t *)calloc(1, fullKeySizeBytes);
-    uint32_t *hostCoefficientQ = (uint32_t *)calloc(1, fullKeySizeBytes);
-    int32_t *validationResults = (int32_t *)calloc(totalMessages, sizeof(int32_t));
+    //     manager.addVariable("Exponent",     "00000000000000010000000000000001", 32);
+    //     // std::cout << "Exponent: " << manager.exportCudaVariable("Exponent") << std::endl;
 
-    // Create XMP handle and integer objects
-    XMP_CHECK_ERROR(xmpHandleCreate(&xmpHandle));
+    //     manager.addVariable("PrimeP",       "00000000000000000001001101000011", halfKeySizeBytes / 8);
+    //     // std::cout << "PrimeP: " << manager.exportCudaVariable("PrimeP") << std::endl;
 
-    XMP_CHECK_ERROR(xmpIntegersCreate(xmpHandle, &publicModulus, keyBits, 1));
-    XMP_CHECK_ERROR(xmpIntegersCreate(xmpHandle, &publicExponent, 32, 1));
-    XMP_CHECK_ERROR(xmpIntegersCreate(xmpHandle, &primeP, halfKeyBits, 1));
-    XMP_CHECK_ERROR(xmpIntegersCreate(xmpHandle, &primeQ, halfKeyBits, 1));
-    XMP_CHECK_ERROR(xmpIntegersCreate(xmpHandle, &privateExponent, keyBits, 1));
-    XMP_CHECK_ERROR(xmpIntegersCreate(xmpHandle, &coefficientP, keyBits, 1));
-    XMP_CHECK_ERROR(xmpIntegersCreate(xmpHandle, &coefficientQ, keyBits, 1));
-    XMP_CHECK_ERROR(xmpIntegersCreate(xmpHandle, &plaintext, keyBits, totalMessages));
-    XMP_CHECK_ERROR(xmpIntegersCreate(xmpHandle, &ciphertext, keyBits, totalMessages));
-    XMP_CHECK_ERROR(xmpIntegersCreate(xmpHandle, &result, keyBits, totalMessages));
-    XMP_CHECK_ERROR(xmpIntegersCreate(xmpHandle, &partialCipherP, keyBits + halfKeyBits, totalMessages));
-    XMP_CHECK_ERROR(xmpIntegersCreate(xmpHandle, &partialCipherQ, keyBits + halfKeyBits, totalMessages));
-    XMP_CHECK_ERROR(xmpIntegersCreate(xmpHandle, &partialPlainP, halfKeyBits, totalMessages));
-    XMP_CHECK_ERROR(xmpIntegersCreate(xmpHandle, &partialPlainQ, halfKeyBits, totalMessages));
-    XMP_CHECK_ERROR(xmpIntegersCreate(xmpHandle, &dp, halfKeyBits, 1));
-    XMP_CHECK_ERROR(xmpIntegersCreate(xmpHandle, &dq, halfKeyBits, 1));
-    XMP_CHECK_ERROR(xmpIntegersCreate(xmpHandle, &scratchSpaceResult, halfKeyBits, totalMessages));
+    //     manager.addVariable("PrimeQ",       "00000000000000000000110111010101", halfKeySizeBytes / 8);
+    //     // std::cout << "PrimeQ: " << manager.exportCudaVariable("PrimeQ") << std::endl;
 
-    // Hardcoded keys for testing
-    hostModulus[0] = 17460671;
-    hostExponent[0] = 65537;
-    hostPrimeP[0] = 4931;
-    hostPrimeQ[0] = 3541;
-    hostDP[0] = 1063;
-    hostDQ[0] = 113;
-    hostCoefficientP[0] = 15212136;
-    hostCoefficientQ[0] = 2248536;
+    //     manager.addVariable("DP",           "00000000000000000000010000100111", halfKeySizeBytes / 8);
+    //     // std::cout << "DP: " << manager.exportCudaVariable("DP") << std::endl;
 
-    // Example decimal strings
-    const char* modulusString = "17460671";
-    const char* exponentString = "65537";
-    const char* primePString = "4931";
-    const char* primeQString = "3541";
-    const char* dpString = "1063";
-    const char* dqString = "113";
-    const char* coefficientPString = "15212136";
-    const char* coefficientQString = "2248536";
+    //     manager.addVariable("DQ",           "00000000000000000000000001110001", halfKeySizeBytes / 8);
+    //     // std::cout << "DQ: " << manager.exportCudaVariable("DQ") << std::endl;
 
-    // const char *modulusString = "13829982717909335748179034405320242413849622614255097391828563247796418348257440146014379231260712065070897765621725469845232840009894624271030845992041645260269120321856587015460470487559870155883435056512950267965302970839637832882679756239572751064344251727638317398023744771819862062139894061705621810959364318703232849614816438826057808803334054664465016141543125428597562454454522315677059515111624370489276816365107746570308023393388540969596327203092472317210634294845306590749678755781897308234162602708474771958750626746608717471307944670093755300516834005444393531966323655363931756656218610981551634716423";
-    // const char *exponentString = "65537";
-    // const char *primePString = "77131108284679771703035256231489387573731190895924399074668343612040473975966104157996553296139313101744921629565011059094384492399664348894990701650518244278415876273195408200153080816638319302478282581465795854484986364369028434634418160147421082128272885511407788352704862553773492361910284291261051621947";
-    // const char *primeQString = "179304861883545982535696179954237010218152580252063578670021523711348152281438498913693424103662589413984422317886982461024284589299340595152384513098083294398820186335684387226771994119132251402721084932345151244485259808270869912444256546283939818931643006772312592969420258042447468518414565534068407948709";
-    // const char *dpString = "64735898976132731777857611257962277240231993457593749654426236177736031112928812109351975434550603737758509151078374556441195340104727673084959084857206708066195664653663021316957141924701935597186595867884189098920406411219897295376141277429679366197196241322535138903833421804023848320290449478017213855763";
-    // const char *dqString = "14120151855913160746856401494481242805375367604267820155270779618753800355898257364444081386072029906244924295933819315521710373764040111869347948061388343720223857998969545790581965327202062186084860755540127341391708895287943598549289836815408294635186376519399809150787768005204256908670484958440683177797";
-    // const char *coefficientPString = "8883788031638636209185856263441736061348453719353610363335869106364547402308910551715756830320055837309041769741192177634036411363540364298313429372105973035823756953184779927001601495559642679990513219810285142096693993255788043406579399383800801822365665179764259756686059255844282892658878884152739732728457347994832081680099829031931126849096804105511074454529972515987115059183582560796636992669231187035282600965540802715274395669193064693000461244054415625516030153968527059996648949422150834563539146303649668478221768281388806836092978360244283095614110667602492716833319272910441865778555940826943114822486";
-    // const char *coefficientQString = "4946194686270699538993178141878506352501168894901487028492694141431870945948529594298622400940656227761855995880533292211196428646354259972717416619935672224445363368671807088458868992000227475892921836702665125868608977583849789476100356855771949241978586547874057641337685515975579169481015177552882078230906970708400767934716609794126681954237250558953941687013152912610447395270939754880422522442393183453994215399566943855033627724195476276595865959038056691694604140876779530753029806359746473670623456404825103480528858465219910635214966309849472204902723337841900815133004382453489890877662670154608519893938";
+    //     manager.addVariable("CoefficientP", "0000000000000000000000000000000000000000111010000001111001101000");
+    //     // std::cout << "CoefficientP: " << manager.exportCudaVariable("CoefficientP") << std::endl;
 
-    // Generate random plaintext
-    for (int i = 0; i < totalMessages; i++)
+    //     manager.addVariable("CoefficientQ", "0000000000000000000000000000000000000000001000100100111101011000");
+    //     // std::cout << "CoefficientQ: " << manager.exportCudaVariable("CoefficientQ") << std::endl;
+        
+    //     manager.addVariable("plaintext",    "0101010101010101010101010101010101010101010101010101010101010101");
+    //     std::cout << "plaintext : " << manager.exportCudaVariable("plaintext") << std::endl;
+
+    //     manager.rsaEncrypt("ciphertext", "plaintext", "Exponent", "Modulus");
+    //     std::cout << "ciphertext : " << manager.exportCudaVariable("ciphertext") << std::endl;
+
+    //     manager.rsaDecrypt("plaintext","ciphertext","PrimeP","PrimeQ","DP","DQ","CoefficientP","CoefficientQ","Modulus");
+    //     std::cout << "plaintext : " << manager.exportCudaVariable("plaintext") << std::endl;
+    // }
+
+
     {
-        hostMessages[i * fullKeySizeWords] = rand32() % hostModulus[0];
+        // 2048bit
+        uint32_t fullKeySizeBits = 2048;
+        uint32_t fullKeySizeBytes = fullKeySizeBits * 8;
+        uint32_t halfKeySizeBytes = fullKeySizeBytes / 2;
+
+        // Create and manage host variable and cudaVars
+        CudaVariableManager manager(fullKeySizeBits);
+        // rsaEncrypt
+
+        manager.addVariable("Modulus", "10000101100110100000100101110010011101100101001100111101010001111011000110001011100001011000001101101000000000111011111100101001110110011101100101110101111000001110001111001110000011101011011011010010111001001001011010110110110111000100011011011101011100101011010111111100111011101100100001011111010011111000001011010100010111101001000100011001111101000101111110001011101011100010101100101001100110110000010101100110000011010001001011001111000111110010100000110100000011101001110001111110100101011111100101101110000011110101000111001011111010000111111011000101110110101111110110001010101010001001110111001010100101001001100010000101000001100110110110010111000100010001111100101000011111011011011010110001010010000011100110111011000110111000011111010110110101110011001100100010101000100101010010000110001010010100111001110001010011000000001011001101001100111001011100011010111101111001000000101011011001001100101100000100101100110011100100111000100101000100110100001010110010000100011110010110110101100101010111110011110111111011010111000100011110101100010011110000101110111101000111110000011010000101001100011100111011010111100100101010100001111100111110110011111001100011011111011111110000101011101111011111101001000110000001000000111001110010100100001101111110100111100110000000110100010010110110111111110001010001111000110101011100010010110001011101111011011010110011110011010011110001001111111001010011000000001001011110000010101100011111100011100000110101110010101011101011101101001010000111111010101111000000001000000101011111010111000110011010100010000110111110111101110001101011101100000110100100110100101000101011000010111110001100111010010000110100111010011001001001010010110001010100111001111011100010010101011100101100011011000010000011100011111100010110010001101011011000010100000111111000000000011110000110000111110110010011010110111010101001011011101001101100010110110111111010000100110011010010000001010010010111001001101001100011101111100010101011111100010111101111001111011101011001101110110000011011011001001000101000001011010101"
+        );
+        manager.addVariable("Exponent", "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000001"
+        );
+        manager.addVariable("PrimeP", "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001011010010010101100001111011000011011101101001110101101111110001000101001110110010000100110000010011010111010111000111111001110111000000000000000100110110000100010011010100101011011111100100011111000010111101100001101110100101000110011000011101011011110100010100011111101101011000101100001110011010000111011000010110110101011011101101110111111010100010010011011111010110111111000110000111100100101010101101000001011000001110010110100010000101101011110101101001110101101010110011000010011000111010011111001100110010101110100100111001101110000110000001110110011010100011101011101101001010010100000000000000010000000000101010011110101101010110000011100111000001100000111000010001100001111001000111010101000100010110110100000100000100110001010010100110001111011100011011100011100100101101111001110101101010001000000100001100110101010010111000011101000101100110001000000001001111011001111011011010100100101110110001001001111001100001101111101111100001101001010011010110011000000101000101010000001010111101010100001101111011100111"
+        , halfKeySizeBytes / 8);
+
+        manager.addVariable("PrimeQ", "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001011110101100101100011111001000111000100001101110110110001000010010001110101101011010111111001000011110000010011100011110100111010010010100011000110101000101010000000110101111111011100100011100001000010110101000100000000011010000101111010001100110111000100000010111001010110000000101101101000101101001011001011111111000001101000001010001111010101110000111100000110001111010110111101010101011101011110001010111110111111011011111111101001011111001001001010100111000101010010001100101111011101101100000011000100111000101010010110000111111100010010100110011001000100011011000100111100011110101101010000110110101100010000010111100100010111011000111010010011100100001110010000011100110011010111011000100010100001101001111001000101110010111011101100100010010011111010001010000000110110000111111101000101110001001000100110110001101011001000001101000011101001001011010111100111101000111101101110010010111111100000000110000001110010111111100010101011100100001000001110101000101110100100001100010101011010001101100111001100010011100011"
+        , halfKeySizeBytes / 8);
+
+        manager.addVariable("DP", "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000101101000001111110111010100110110010011001011100011110110000111011111011100010011111011111011001001010001011010100001101011010100011001001001011100110110000011001101110011110100101001010001010101001011001000011000110011100110000010010101011001011101101011111000000101101100110111011111110111101001101001011110000110100010011110111111100110001111010100101101001000011011100100010110000110001101001101101011011110010011110110001000010111001101011011101000011111110001111110010111111111010010001100111001001110001011111100000010100011011111011101010111110110000110001100001011101100101101101100111011101001100100010000011011111010111000100100000011000010110101110101110100111010110101101101111100011111011000011000001001111010001011101011110111110100101011110000100010111011010001001110101101010111110010001100001100011011110100000101001000100000010001011010001001111001001101011110111100111100110110010101101110101000111110110110111101100001010001010100000010000011101011100010001110111111100101010010110010111011101101101111"
+        , halfKeySizeBytes / 8);
+
+        manager.addVariable("DQ", "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001011011110011001011110111000101011011000000001101100111000101000100101100001100101100111010011011111011000111011000100111110001000011100010010001000100000100110000000000010110101101110100101100011110101110101111110000111101000001010010101111111101100011000100000000000111001000110101111110010111011011011000011010011011011100101000100100100011110010100010110110100010010111101101111100000101000011010110111010100011011100001001000011011010110101100101010100011101100111110011011101110111111010001010010110100000001111110111001100101100100010001000000111101001101011001110001110101101111111011000001110110111100000011011010000001000000010111110011010100011010100101000111100111111001011111100100001110010100010010011110011111000010110111011101110110001101000111001010011000101010101100011011111110001100000001111100110111001000001100000000000010110100111110101000001111000010101001011000110001101100011001000001101110011011011111011110111011000000010001010111010000011110111111011111001010000010100110000110010000000111110111"
+        , halfKeySizeBytes / 8);
+
+        manager.addVariable("CoefficientP", "01001111110010000110001000111100001001000101101011001011111100101001110010010000111001000100011010100100011100100011110011000100101000110011101111011011111011001010011000001000011100001011101010011010010111010001011001111110011000011000101011010000000001101011111110110111001010111010010010001101101011011001011101101011011011001000001101011101001001101111111011001101010011010010101000111001011011101001011111011110000010110010000011001000001010001101000000001000100010010111011100001001000110010001110011110101010111011010010010111000011110100001000000010111011110010101011001101101101110111000111010110110101001001001001011111110011011101011000011000100000001100101100110101100001100001101100000000110111011100111010010101101011110101000111000001101001110000110011010001011110111001101010100100001010010100011000101100101111111101001100000110001111101110111001011011101110100011111000011110001100111100101010100110000100101101100101001101000000110110000010001110100111100010010000010001110110110100001000101011001110101100111001100111101110001010011110101101001101011001111100110100010100101111100110010010011011001101000111110000100011100000010111111010000010011101110100010110000101001101011000100001111110001101100001111001110001100000011010001011011101110010001101011100001101110110111111101000111110000011000010111010001000010111011010100111000100010111111000111011010010110000100101000111101011000001011110101011000001101110011010001100101110011100110000100001110011011110010011010001001011001011010100000011010111101011111010101111101000011001111001000001000011101101010100001111110010110011110100000111111100101001101000111110100010000111011011100110100100000111000110011011101101111010100000011100001001011011101010101101111011010011110000001010101100010100110100111011000011110111001001101011100001010011001101010110000001011011001000010001000000100101101110101010101011111100010111111101010011111100010001100100001010111101011100010001100000111010010110011011101111100111111010101111110111011011001001000100000011010110110001011000100"
+        );
+        manager.addVariable("CoefficientQ", "00110101110100011010011100110110010100011111100001110001010101010001010011111010101000010011110011000011100100011000001001100101001101101001110110011001111101000011110111000101100111011111110000111000100001111000000000111000011110101011110000001101011010111111011001000101110000110010001111010001101000011110101101101000111100100000110110111100110011010110000010111110011000010000000011110000001011000110110110001000000000011111001000000110111101100101100000101011100001010010010101110101011111001101110001111000101100011010110100010011011011100110111010101110011000011010011100011100111011010000111100010011111100000000010110000110100101111011110011010011000010101100010101111100010011001101111010101010010110011100010100001101101000001111100111001001100111101100110010010110110001010111111101100100110111110001110100001011010011010110101010011011001111000010010000111101001001011001111100111001110001100111010111010100000111000110111011010000011110010100100010010101110101110010011100000111111111000100010010011010000010010100001010000110101101011000011110000111000011101101100001001101110100001000011010001001100001101110100110100110000101111001111111100011100101110100111100101111000111000000101011001111110111011001110001110010101101101111010010110010010000010101111010011111000101011010111001111000000000111001100001100100011001010111011100100101011000011011101100011000111101101100100110111011111010110100010100000101110100111001001101111101101101001111101110011101001111111010101111111110100001010100011111101101001000000000000001001001010111010010111110110110100000000111001001101101110000000110010011101001000101110101110110011000101001010101011000000101111000010000011111010011100101100101111000000001001001111111010110101011100111100101100010100110110011101011000011111111110101001110101010100100010011101100011101000110000111111101111000100001010110111011110111000001011000010111000101001000110010011111000101110101110001111110000001100011011011011001001000111001110010010000000111011010110011010111010010111000101101110010000000010010"
+        );
+        
+        manager.addVariable("plaintext",    "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100001101101100010100100110110001011001001100100110100001110101011000100011001001111000011101100101101000110011011010110110011101100011001100100101011001111001011001000110110101010110011110100100100101000111010001100111101001001001010001110100010101100111010110010110111001001010011100000101101001000111011001000110110001001001010001110100101001101100011001000100100001100100011011000101101001010111001101000110011101100001010101110011000101101000010110100011001001101100011101010101100101011000010100100111000001100010001100100011010001100111010110010101011100110101011010110100100101001000010010100110110001011001010101110111100001110000011001000100100001101011011100110100001101101101010101100111010001100011010001110011100100110011010110100101100001001010011100000110001001101101011000110110011101100100010110000100110101100111011001000100011100111000011001110110001100110010001110010111001101100100011011010101010101100111010110010011001000111001011101000110001101000111011110000110110001100101010000110100001001110111011000110110110100111001011010010110001001000111010101100111010001100011011110010111011101100111010110010011001000111001011101010110001001101101010101100110101001100100010000110100001001101000010110010011001101001010011101100110001100110011010011010110011101011001011011010011100100110001011000100110110101010010011010000110001101101101011011000110110001100011011110010111011101001011010110010101011100110101011010110100100101000111010010100011000101100001010101110111100001101011010010010100011101000101011001110101101001101110010101100011000001100100010110000100101001101100010010010100100001100100011011110101101001011000010010100110110001001001010001110110110001110101011000100110110100111001001100100101100101011000010100100111000001100010001100100011010001100111011001000100011101101000011110010110000101011000010110100110110001100011011110010011010000111101");
+        std::cout << "plaintext : " << manager.exportCudaVariable("plaintext") << std::endl;
+        
+        manager.rsaEncrypt("ciphertext", "plaintext", "Exponent", "Modulus");
+        std::cout << "ciphertext : " << manager.exportCudaVariable("ciphertext") << std::endl;
+
+        auto startTime = wallclock();
+        int totalMessages = 1000;
+        for (size_t i = 0; i < totalMessages; i++)
+        {
+            manager.rsaDecrypt("decrypttext","ciphertext","PrimeP","PrimeQ","DP","DQ","CoefficientP","CoefficientQ","Modulus");  
+            manager.removeVariable("decrypttext");
+        }
+        manager.rsaDecrypt("decrypttext","ciphertext","PrimeP","PrimeQ","DP","DQ","CoefficientP","CoefficientQ","Modulus");  
+        std::cout << "decrypttext : " << manager.exportCudaVariable("decrypttext") << std::endl;    
+        auto endTime = wallclock();
+        std::cout << "Decryption time: " << endTime - startTime
+              << ", " << fullKeySizeBits << "-bit throughput: "
+              << (totalMessages+1) / (endTime - startTime) << " decryptions/second" << std::endl;
     }
 
-    // Convert decimal strings to uint32_t arrays
-    importDecimalString(hostModulus, fullKeySizeBytes / sizeof(uint32_t), modulusString);
-    importDecimalString(hostExponent, sizeof(uint32_t) / sizeof(uint32_t), exponentString);
-    importDecimalString(hostPrimeP, halfKeySizeBytes / sizeof(uint32_t), primePString);
-    importDecimalString(hostPrimeQ, halfKeySizeBytes / sizeof(uint32_t), primeQString);
-    importDecimalString(hostDP, halfKeySizeBytes / sizeof(uint32_t), dpString);
-    importDecimalString(hostDQ, halfKeySizeBytes / sizeof(uint32_t), dqString);
-    importDecimalString(hostCoefficientP, fullKeySizeBytes / sizeof(uint32_t), coefficientPString);
-    importDecimalString(hostCoefficientQ, fullKeySizeBytes / sizeof(uint32_t), coefficientQString);
-
-    // for (size_t i = 0; i < fullKeySizeWords; i++)
-    // {
-    //     std::cout << hostPrimeP[i * fullKeySizeWords] << " ";
-    // }
-    
-
-    // Import keys and plaintext
-    XMP_CHECK_ERROR(xmpIntegersImport(xmpHandle, publicModulus, fullKeySizeWords, -1, sizeof(uint32_t), 0, 0, hostModulus, 1));
-    XMP_CHECK_ERROR(xmpIntegersImport(xmpHandle, publicExponent, 1, -1, sizeof(uint32_t), 0, 0, hostExponent, 1));
-    XMP_CHECK_ERROR(xmpIntegersImport(xmpHandle, primeP, halfKeySizeWords, -1, sizeof(uint32_t), 0, 0, hostPrimeP, 1));
-    XMP_CHECK_ERROR(xmpIntegersImport(xmpHandle, primeQ, halfKeySizeWords, -1, sizeof(uint32_t), 0, 0, hostPrimeQ, 1));
-    XMP_CHECK_ERROR(xmpIntegersImport(xmpHandle, plaintext, fullKeySizeWords, -1, sizeof(uint32_t), 0, 0, hostMessages, totalMessages));
-    XMP_CHECK_ERROR(xmpIntegersImport(xmpHandle, dp, halfKeySizeWords, -1, sizeof(uint32_t), 0, 0, hostDP, 1));
-    XMP_CHECK_ERROR(xmpIntegersImport(xmpHandle, dq, halfKeySizeWords, -1, sizeof(uint32_t), 0, 0, hostDQ, 1));
-    XMP_CHECK_ERROR(xmpIntegersImport(xmpHandle, coefficientP, fullKeySizeWords, -1, sizeof(uint32_t), 0, 0, hostCoefficientP, 1));
-    XMP_CHECK_ERROR(xmpIntegersImport(xmpHandle, coefficientQ, fullKeySizeWords, -1, sizeof(uint32_t), 0, 0, hostCoefficientQ, 1));
-
-    // Encryption
-    startTime = wallclock();
-    XMP_CHECK_ERROR(xmpIntegersPowm(xmpHandle, ciphertext, plaintext, publicExponent, publicModulus, totalMessages));
-    endTime = wallclock();
-    std::cout << "Encryption time: " << endTime - startTime
-              << ", " << keyBits << "-bit throughput: "
-              << totalMessages / (endTime - startTime) << " encryptions/second" << std::endl;
-
-    // Decryption
-    startTime = wallclock();
-    XMP_CHECK_ERROR(xmpIntegersMod(xmpHandle, scratchSpaceResult, ciphertext, primeP, totalMessages));
-    XMP_CHECK_ERROR(xmpIntegersPowm(xmpHandle, partialPlainP, scratchSpaceResult, dp, primeP, totalMessages));
-    XMP_CHECK_ERROR(xmpIntegersMod(xmpHandle, scratchSpaceResult, ciphertext, primeQ, totalMessages));
-    XMP_CHECK_ERROR(xmpIntegersPowm(xmpHandle, partialPlainQ, scratchSpaceResult, dq, primeQ, totalMessages));
-    XMP_CHECK_ERROR(xmpIntegersMul(xmpHandle, partialCipherP, partialPlainP, coefficientP, totalMessages));
-    XMP_CHECK_ERROR(xmpIntegersMul(xmpHandle, partialCipherQ, partialPlainQ, coefficientQ, totalMessages));
-    XMP_CHECK_ERROR(xmpIntegersAdd(xmpHandle, partialCipherP, partialCipherP, partialCipherQ, totalMessages));
-    XMP_CHECK_ERROR(xmpIntegersMod(xmpHandle, result, partialCipherP, publicModulus, totalMessages));
-    endTime = wallclock();
-    std::cout << "Decryption time: " << endTime - startTime
-              << ", " << keyBits << "-bit throughput: "
-              << totalMessages / (endTime - startTime) << " decryptions/second" << std::endl;
-
-    // Validation not work well
-    // XMP_CHECK_ERROR(xmpIntegersCmp(xmpHandle, validationResults, plaintext, result, totalMessages));
-    // std::cout << "Validating results..." << std::endl;
-    // for (int i = 0; i < totalMessages; i++) {
-    //     if (validationResults[i] != 0) {
-    //         std::cerr << "  Error at index " << i << std::endl;
-    //         exit(1);
-    //     }
-    // }
-
-    // Export plaintext
-    uint32_t *exportedPlaintext = (uint32_t *)calloc(totalMessages * fullKeySizeWords, sizeof(uint32_t));
-    XMP_CHECK_ERROR(xmpIntegersExport(xmpHandle, exportedPlaintext, &fullKeySizeWords, -1, sizeof(uint32_t), 0, 0, plaintext, totalMessages));
-
-    // Export result (decrypted text)
-    uint32_t *exportedResult = (uint32_t *)calloc(totalMessages * fullKeySizeWords, sizeof(uint32_t));
-    XMP_CHECK_ERROR(xmpIntegersExport(xmpHandle, exportedResult, &fullKeySizeWords, -1, sizeof(uint32_t), 0, 0, result, totalMessages));
-
-    // Print plaintext and result as decimal strings
-    // for (int i = 0; i < totalMessages; i++)
-    // {
-    //     std::string plaintextDecimal = binaryToDecimalString(&exportedPlaintext[i * fullKeySizeWords], fullKeySizeWords);
-    //     std::string resultDecimal = binaryToDecimalString(&exportedResult[i * fullKeySizeWords], fullKeySizeWords);
-
-    //     std::cout << "Message " << i + 1 << ": " << plaintextDecimal
-    //               << "\n"
-    //               << "Decrypt " << i + 1 << ": " << resultDecimal << "\n"
-    //               << std::endl;
-    // }
-
-    // Free exported buffers
-    free(exportedPlaintext);
-    free(exportedResult);
-
-    // Clean up
-    XMP_CHECK_ERROR(xmpIntegersDestroy(xmpHandle, publicModulus));
-    XMP_CHECK_ERROR(xmpIntegersDestroy(xmpHandle, publicExponent));
-    XMP_CHECK_ERROR(xmpIntegersDestroy(xmpHandle, primeP));
-    XMP_CHECK_ERROR(xmpIntegersDestroy(xmpHandle, primeQ));
-    XMP_CHECK_ERROR(xmpIntegersDestroy(xmpHandle, plaintext));
-    XMP_CHECK_ERROR(xmpIntegersDestroy(xmpHandle, ciphertext));
-    XMP_CHECK_ERROR(xmpIntegersDestroy(xmpHandle, scratchSpaceResult));
-    XMP_CHECK_ERROR(xmpIntegersDestroy(xmpHandle, partialCipherP));
-    XMP_CHECK_ERROR(xmpIntegersDestroy(xmpHandle, partialCipherQ));
-    XMP_CHECK_ERROR(xmpIntegersDestroy(xmpHandle, dp));
-    XMP_CHECK_ERROR(xmpIntegersDestroy(xmpHandle, dq));
-    XMP_CHECK_ERROR(xmpIntegersDestroy(xmpHandle, coefficientP));
-    XMP_CHECK_ERROR(xmpIntegersDestroy(xmpHandle, coefficientQ));
-    XMP_CHECK_ERROR(xmpHandleDestroy(xmpHandle));
-
-    free(hostModulus);
-    free(hostExponent);
-    free(hostPrimeP);
-    free(hostPrimeQ);
-    free(hostMessages);
-    free(hostDP);
-    free(hostDQ);
-    free(hostCoefficientP);
-    free(hostCoefficientQ);
-    free(validationResults);
 
     std::cout << "CRT RSA executed successfully" << std::endl;
     return 0;
